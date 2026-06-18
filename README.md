@@ -189,15 +189,3 @@ streamlit run app.py
    - *"Show the top 10 customers by total spend."*
 3. The agent explores the schema, runs SQL, and returns results as a table
 
----
-
-## Key Design Decisions
-
-**Why not generate Python code?**
-Generated code is unpredictable and can silently corrupt data. Pre-built tools are deterministic, testable, and auditable.
-
-**Why pre-analyze before calling the LLM?**
-An LLM reading 30-column statistics to decide what's wrong is slow and unreliable. Detecting obvious issues programmatically (regex, type checks, IQR outliers) and handing the LLM a specific fix list is faster and more accurate.
-
-**Why LangGraph `create_react_agent` instead of LangChain AgentExecutor?**
-`AgentExecutor` was removed in LangChain 1.x. LangGraph's `create_react_agent` is the current recommended approach, supports streaming via `graph.stream(..., stream_mode="updates")`, and has a cleaner tool-calling loop.
