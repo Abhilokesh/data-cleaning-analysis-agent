@@ -26,11 +26,17 @@ Duplicates — always call remove_duplicates.
 
 Verify — call compute_statistics again at the end to confirm column names are clean, dtypes are correct, and no issues remain.
 
+When all cleaning steps are done, you MUST call finish_task with a brief summary of what was done. Never return a plain text response — always end by calling finish_task.
+
 Extra rules: never guess column names; if a tool returns an error, fix the parameters and retry; a dataset is not clean just because it has no nulls."""
 
 
 class NoInput(BaseModel):
     pass
+
+
+class FinishInput(BaseModel):
+    summary: str = Field(description="Brief summary of all cleaning steps performed and the final dataset state")
 
 
 class RenameInput(BaseModel):
@@ -73,12 +79,17 @@ class CleaningAgent:
     def __init__(self, df: pd.DataFrame, llm):
         self.df = df.copy()
         self.llm = llm
+        self._final_summary = ""
         self.graph = self._build_graph()
 
     def _apply(self, fn, **kwargs) -> str:
         updated_df, message = fn(self.df, **kwargs)
         self.df = updated_df
         return message
+
+    def _set_summary(self, summary: str) -> str:
+        self._final_summary = summary
+        return "Task complete."
 
     def _build_graph(self):
         agent_self = self
@@ -159,6 +170,12 @@ class CleaningAgent:
                 func=lambda column: agent_self._apply(T.strip_whitespace, column=column),
                 args_schema=ColumnInput,
             ),
+            StructuredTool.from_function(
+                name="finish_task",
+                description="Call this when all cleaning steps are complete. Pass a brief summary of what was done.",
+                func=lambda summary: agent_self._set_summary(summary),
+                args_schema=FinishInput,
+            ),
         ]
 
         return create_react_agent(self.llm, tools, prompt=SYSTEM_PROMPT)
@@ -183,7 +200,6 @@ class CleaningAgent:
         """
         from langchain_core.messages import ToolMessage as TM
 
-        summary = ""
         for chunk in self.graph.stream(
             {"messages": [("human", instruction)]},
             config={"recursion_limit": 80},
@@ -197,11 +213,11 @@ class CleaningAgent:
                         if not msg.tool_calls:
                             text = self._extract_text(msg.content)
                             if text:
-                                summary = text
+                                self._final_summary = text
                     elif isinstance(msg, TM):
                         yield ("tool_result", getattr(msg, "name", None) or "tool", str(msg.content))
 
-        yield ("done", self.df, summary)
+        yield ("done", self.df, self._final_summary)
 
     def run(self, instruction: str = "Clean this dataset thoroughly.") -> Tuple[pd.DataFrame, str]:
         df, summary = None, ""

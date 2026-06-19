@@ -8,7 +8,9 @@ SYSTEM_PROMPT = """You are a SQL data analysis agent connected to a SQLite datab
 
 Use get_rich_schema first to understand what tables and columns exist, their types, row counts, and sample values. Use get_distinct_values when you need the exact string values in a column before writing a WHERE clause. Use execute_sql to run queries — if it returns a SQL_ERROR, read the error and retry with a corrected query.
 
-SQL rules: write only SQLite-compatible SQL (no ILIKE, no DATE_FORMAT; use strftime for dates). Wrap column names in [square brackets]. Use actual values from sample_values or get_distinct_values in WHERE clauses — never guess. Check _inferred_relationships in the schema to find JOIN columns between tables. Present the final answer clearly with the result table included."""
+SQL rules: write only SQLite-compatible SQL (no ILIKE, no DATE_FORMAT; use strftime for dates). Wrap column names in [square brackets]. Use actual values from sample_values or get_distinct_values in WHERE clauses — never guess. Check _inferred_relationships in the schema to find JOIN columns between tables.
+
+When you have the final answer, you MUST call finish_task with a clear explanation and the result table. Never return a plain text response — always end by calling finish_task."""
 
 
 class NoInput(BaseModel):
@@ -24,11 +26,20 @@ class DistinctValuesInput(BaseModel):
     column: str = Field(description="Column name to get distinct values for")
 
 
+class FinishInput(BaseModel):
+    answer: str = Field(description="The final answer to the user's question, including any result tables")
+
+
 class AnalysisAgent:
     def __init__(self, db_path: str, llm):
         self.db_path = db_path
         self.llm = llm
+        self._final_answer = ""
         self.graph = self._build_graph()
+
+    def _set_answer(self, answer: str) -> str:
+        self._final_answer = answer
+        return "Answer recorded."
 
     def _build_graph(self):
         agent_self = self
@@ -62,6 +73,12 @@ class AnalysisAgent:
                 func=lambda table, column: T.get_distinct_values(agent_self.db_path, table, column),
                 args_schema=DistinctValuesInput,
             ),
+            StructuredTool.from_function(
+                name="finish_task",
+                description="Call this when you have the final answer. Pass the complete answer including result tables.",
+                func=lambda answer: agent_self._set_answer(answer),
+                args_schema=FinishInput,
+            ),
         ]
 
         return create_react_agent(self.llm, tools, prompt=SYSTEM_PROMPT)
@@ -86,7 +103,6 @@ class AnalysisAgent:
         """
         from langchain_core.messages import ToolMessage as TM
 
-        answer = "Agent completed without a final text response."
         for chunk in self.graph.stream(
             {"messages": [("human", question)]},
             config={"recursion_limit": 25},
@@ -100,11 +116,11 @@ class AnalysisAgent:
                         if not msg.tool_calls:
                             text = self._extract_text(msg.content)
                             if text:
-                                answer = text
+                                self._final_answer = text
                     elif isinstance(msg, TM):
                         yield ("tool_result", getattr(msg, "name", None) or "tool", str(msg.content))
 
-        yield ("done", answer)
+        yield ("done", self._final_answer)
 
     def run(self, question: str) -> str:
         answer = ""
